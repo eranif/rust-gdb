@@ -26,6 +26,7 @@ fn start_debugger() {
     let mut dbg = dbg::Debugger::start().unwrap();
     let resp = dbg.send_cmd_raw("-break-info\n").unwrap();
     assert_eq!(msg::ResultClass::Done, resp.class);
+    println!("{:?}", resp);
 }
 
 #[test]
