@@ -23,8 +23,8 @@ use std::str;
 pub fn parse_line(line: &str) -> Result<msg::Record, dbg::Error> {
     if let Some(result) = parse_result_line(line) {
         Ok(msg::Record::Result(result))
-    } else if let Some(async) = parse_async_line(line) {
-        Ok(msg::Record::Async(async))
+    } else if let Some(async_record) = parse_async_line(line) {
+        Ok(msg::Record::Async(async_record))
     } else if let Some(stream) = parse_stream_line(line) {
         Ok(msg::Record::Stream(stream))
     } else {
