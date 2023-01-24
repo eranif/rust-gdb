@@ -15,16 +15,15 @@
  * along with rust-gdb.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-use std::process;
-use std::io::{Write, BufReader, BufWriter, BufRead};
-use std::io;
-use std::error;
-use std::fmt;
+use msg;
+use parser;
 use std::convert::From;
+use std::fmt;
+use std::io;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::process;
 use std::result;
 use std::str;
-use parser;
-use msg;
 
 pub struct Debugger {
     stdin: BufWriter<process::ChildStdin>,
@@ -35,29 +34,15 @@ pub struct Debugger {
 pub enum Error {
     IOError(io::Error),
     ParseError,
-    IgnoredOutput
+    IgnoredOutput,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let err = self as &error::Error;
-        write!(f, "{}", err.description())
-    }
-}
-
-impl error::Error for Error {
-    fn description(&self) -> &str {
         match self {
-            &Error::IOError(ref err) => err.description(),
-            &Error::ParseError => "cannot parse response from gdb",
-            &Error::IgnoredOutput => "ignored output"
-        }
-    }
-
-    fn cause(&self) -> Option<&error::Error> {
-        match self {
-            &Error::IOError(ref err) => Some(err),
-            _ => None
+            &Error::IOError(ref err) => write!(f, "{}", err.to_string()),
+            &Error::ParseError => write!(f, "cannot parse response from gdb"),
+            &Error::IgnoredOutput => write!(f, "ignored output"),
         }
     }
 }
@@ -75,7 +60,7 @@ impl Debugger {
         let mut result = Vec::new();
         let mut line = String::new();
         self.stdout.read_line(&mut line)?;
-        while line != "(gdb) \n" && line != "(gdb) \r\n"{
+        while line != "(gdb) \n" && line != "(gdb) \r\n" {
             match parser::parse_line(line.as_str()) {
                 Ok(resp) => result.push(resp),
                 Err(err) => return Err(err),

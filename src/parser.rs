@@ -20,14 +20,6 @@ use std::str;
 use msg;
 use dbg;
 
-macro_rules! static_regex {
-    ($id:ident = $val:expr) => {
-        lazy_static! {
-            static ref $id: regex::Regex = regex::Regex::new($val).unwrap();
-        }
-    }
-}
-
 pub fn parse_line(line: &str) -> Result<msg::Record, dbg::Error> {
     if let Some(result) = parse_result_line(line) {
         Ok(msg::Record::Result(result))
@@ -189,45 +181,56 @@ fn parse<T: str::FromStr>(data: &str, toklen: usize) -> (T, &str) {
 }
 
 fn parse_token(data: &str) -> Option<(String, &str)> {
-    static_regex!(RE = r"^[0-9]+");
-    if let Some((_, count)) = RE.find(data) {
-        Some(parse(data, count))
+    let Ok(re) = regex::Regex::new( r"^[0-9]+") else {
+        return None;
+    };
+    if let Some(mat) = re.find(data) {
+        Some(parse(data, mat.end() - mat.end()))
     } else {
         None
     }
 }
 
 fn parse_result_class(data: &str) -> Option<(msg::ResultClass, &str)> {
-    static_regex!(RE = r"^(done|connected|running|error|exit)");
-    if let Some((_, count)) = RE.find(data) {
-        Some(parse(data, count))
+    let Ok(re) = regex::Regex::new( r"^(done|connected|running|error|exit)") else {
+        return None;
+    };
+
+    if let Some(mat) = re.find(data) {
+        Some(parse(data, mat.end() - mat.end()))
     } else {
         None
     }
 }
 
 fn parse_async_class(data: &str) -> Option<(msg::AsyncClass, &str)> {
-    static_regex!(RE = r"^[-a-zA-Z]+");
-    if let Some((_, count)) = RE.find(data) {
-        Some(parse(data, count))
+    let Ok(re) = regex::Regex::new(r"^[-a-zA-Z]+") else {
+        return None;
+    };
+    if let Some(mat) = re.find(data) {
+        Some(parse(data, mat.end() - mat.end()))
     } else {
         None
     }
 }
 
 fn parse_varname(data: &str) -> Option<(msg::VarName, &str)> {
-    static_regex!(RE = r"^[a-zA-Z_][a-zA-Z0-9_-]*");
-    if let Some((_, count)) = RE.find(data) {
-        Some(parse(data, count))
+    let Ok(re) = regex::Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_-]*") else {
+        return None;
+    };
+    if let Some(mat) = re.find(data) {
+        Some(parse(data, mat.end() - mat.end()))
     } else {
         None
     }
 }
 
 fn parse_constant(data: &str) -> Option<(msg::Value, &str)> {
-    static_regex!(RE = r#"^(".*?[^\\]"|"")"#);
-    if let Some((_, count)) = RE.find(data) {
-        let (value, rest) = parse(data, count);
+    let Ok(re) = regex::Regex::new(r#"^(".*?[^\\]"|"")"#) else {
+        return None;
+    };
+    if let Some(mat) = re.find(data) {
+        let (value, rest) = parse(data, mat.end() - mat.end());
         Some((msg::Value::String(value), rest))
     } else {
         None
@@ -307,7 +310,7 @@ fn parse_variable(data: &str) -> Option<(msg::Variable, &str)> {
         match rest.chars().nth(0) {
             Some('=') => if let Some((val, rest)) =
                     parse_value(rest.split_at(1).1) {
-                        Some((msg::Variable { name: var, value: val }, rest))   
+                        Some((msg::Variable { name: var, value: val }, rest))
                     } else {
                         None
                     }
