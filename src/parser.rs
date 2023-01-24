@@ -15,10 +15,10 @@
  * along with rust-gdb.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+use dbg;
+use msg;
 use regex;
 use std::str;
-use msg;
-use dbg;
 
 pub fn parse_line(line: &str) -> Result<msg::Record, dbg::Error> {
     if let Some(result) = parse_result_line(line) {
@@ -46,14 +46,14 @@ pub fn parse_result_line(mut line: &str) -> Option<msg::MessageRecord<msg::Resul
         line = rest;
         class
     } else {
-        return None
+        return None;
     };
     let mut result = Vec::new();
     if line.starts_with("\n") || line.starts_with("\r\n") {
         return Some(msg::MessageRecord::<msg::ResultClass> {
             token: token,
             class: class,
-            content: result
+            content: result,
         });
     } else if !line.starts_with(",") {
         return None;
@@ -80,7 +80,7 @@ pub fn parse_result_line(mut line: &str) -> Option<msg::MessageRecord<msg::Resul
     Some(msg::MessageRecord::<msg::ResultClass> {
         token: token,
         class: class,
-        content: result
+        content: result,
     })
 }
 
@@ -93,30 +93,30 @@ pub fn parse_async_line(mut line: &str) -> Option<msg::AsyncRecord> {
     let async_type = if let Some(first) = line.chars().nth(0) {
         match first {
             '=' | '+' | '*' => first,
-            _ => return None
+            _ => return None,
         }
     } else {
-        return None
+        return None;
     };
     line = line.split_at(1).1;
     let class = if let Some((class, rest)) = parse_async_class(line) {
         line = rest;
         class
     } else {
-        return None
+        return None;
     };
     let mut result = Vec::new();
     if line.starts_with("\n") || line.starts_with("\r\n") {
         let msg = msg::MessageRecord::<msg::AsyncClass> {
             token: token,
             class: class,
-            content: result
+            content: result,
         };
         return Some(match async_type {
             '=' => msg::AsyncRecord::Notify(msg),
             '+' => msg::AsyncRecord::Status(msg),
             '*' => msg::AsyncRecord::Exec(msg),
-            _ => panic!("unrecognized async type ???!!!")
+            _ => panic!("unrecognized async type ???!!!"),
         });
     } else if !line.starts_with(",") {
         return None;
@@ -143,20 +143,20 @@ pub fn parse_async_line(mut line: &str) -> Option<msg::AsyncRecord> {
     let msg = msg::MessageRecord::<msg::AsyncClass> {
         token: token,
         class: class,
-        content: result
+        content: result,
     };
     Some(match async_type {
         '=' => msg::AsyncRecord::Notify(msg),
         '+' => msg::AsyncRecord::Status(msg),
         '*' => msg::AsyncRecord::Exec(msg),
-        _ => panic!("unrecognized async type ???!!!")
+        _ => panic!("unrecognized async type ???!!!"),
     })
 }
 
 pub fn parse_stream_line(mut line: &str) -> Option<msg::StreamRecord> {
     let stream_type = match line.chars().nth(0) {
-        Some(t@'~') | Some(t@'@') | Some(t@'&') => t,
-        _ => return None
+        Some(t @ '~') | Some(t @ '@') | Some(t @ '&') => t,
+        _ => return None,
     };
     line = line.split_at(1).1;
     if let Some((msg::Value::String(content), rest)) = parse_constant(line) {
@@ -185,7 +185,7 @@ fn parse_token(data: &str) -> Option<(String, &str)> {
         return None;
     };
     if let Some(mat) = re.find(data) {
-        Some(parse(data, mat.end() - mat.end()))
+        Some(parse(data, mat.end() - mat.start()))
     } else {
         None
     }
@@ -197,7 +197,7 @@ fn parse_result_class(data: &str) -> Option<(msg::ResultClass, &str)> {
     };
 
     if let Some(mat) = re.find(data) {
-        Some(parse(data, mat.end() - mat.end()))
+        Some(parse(data, mat.end() - mat.start()))
     } else {
         None
     }
@@ -208,7 +208,7 @@ fn parse_async_class(data: &str) -> Option<(msg::AsyncClass, &str)> {
         return None;
     };
     if let Some(mat) = re.find(data) {
-        Some(parse(data, mat.end() - mat.end()))
+        Some(parse(data, mat.end() - mat.start()))
     } else {
         None
     }
@@ -219,18 +219,19 @@ fn parse_varname(data: &str) -> Option<(msg::VarName, &str)> {
         return None;
     };
     if let Some(mat) = re.find(data) {
-        Some(parse(data, mat.end() - mat.end()))
+        Some(parse(data, mat.end() - mat.start()))
     } else {
         None
     }
 }
 
 fn parse_constant(data: &str) -> Option<(msg::Value, &str)> {
-    let Ok(re) = regex::Regex::new(r#"^(".*?[^\\]"|"")"#) else {
+    let Ok(re) = regex::Regex::new(r#"^(".*?[^\\]"|"")"#) else
+    {
         return None;
     };
     if let Some(mat) = re.find(data) {
-        let (value, rest) = parse(data, mat.end() - mat.end());
+        let (value, rest) = parse(data, mat.end() - mat.start());
         Some((msg::Value::String(value), rest))
     } else {
         None
@@ -302,20 +303,28 @@ fn parse_value_list(data: &str) -> Option<(msg::Value, &str)> {
 }
 
 fn parse_value(data: &str) -> Option<(msg::Value, &str)> {
-    parse_constant(data).or(parse_variable_list(data)).or(parse_value_list(data))
+    parse_constant(data)
+        .or(parse_variable_list(data))
+        .or(parse_value_list(data))
 }
 
 fn parse_variable(data: &str) -> Option<(msg::Variable, &str)> {
     if let Some((var, rest)) = parse_varname(data) {
         match rest.chars().nth(0) {
-            Some('=') => if let Some((val, rest)) =
-                    parse_value(rest.split_at(1).1) {
-                        Some((msg::Variable { name: var, value: val }, rest))
-                    } else {
-                        None
-                    }
-                ,
-            _ => None
+            Some('=') => {
+                if let Some((val, rest)) = parse_value(rest.split_at(1).1) {
+                    Some((
+                        msg::Variable {
+                            name: var,
+                            value: val,
+                        },
+                        rest,
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     } else {
         None

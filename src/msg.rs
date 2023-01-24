@@ -21,7 +21,7 @@ use std::str;
 pub enum Record {
     Result(MessageRecord<ResultClass>),
     Async(AsyncRecord),
-    Stream(StreamRecord)
+    Stream(StreamRecord),
 }
 
 #[derive(Debug)]
@@ -37,13 +37,13 @@ pub enum ResultClass {
     Running,
     Connected,
     Error,
-    Exit
+    Exit,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum AsyncClass {
     Stopped,
-    Other
+    Other,
 }
 
 #[derive(Debug)]
@@ -63,7 +63,7 @@ pub enum StreamRecord {
 #[derive(Debug)]
 pub struct Variable {
     pub name: VarName,
-    pub value: Value
+    pub value: Value,
 }
 
 #[derive(Debug)]

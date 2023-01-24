@@ -18,8 +18,8 @@
 extern crate regex;
 
 mod dbg;
-mod parser;
 mod msg;
+mod parser;
 
 #[test]
 fn start_debugger() {
@@ -32,18 +32,25 @@ fn start_debugger() {
 fn parse_stuff() {
     let resp = parser::parse_line("789^done,this=\"that\"\n").unwrap();
     match resp {
-        msg::Record::Result(_) => {},
-        _ => panic!("wrong type :(")
+        msg::Record::Result(msg) => {
+            println!("{:?}", msg);
+        }
+        _ => panic!("wrong type :("),
     };
+
     let resp = parser::parse_line("=stopped,this=\"that\"\n").unwrap();
     match resp {
-        msg::Record::Async(_) => {},
-        _ => panic!("wrong type :(")
+        msg::Record::Async(msg) => {
+            println!("{:?}", msg);
+        }
+        _ => panic!("wrong type :("),
     };
     let resp = parser::parse_line("~\"yadda yadda\"\n").unwrap();
     match resp {
-        msg::Record::Stream(_) => {},
-        _ => panic!("wrong type :(")
+        msg::Record::Stream(msg) => {
+            println!("{:?}", msg);
+        }
+        _ => panic!("wrong type :("),
     };
 }
 
