@@ -15,8 +15,8 @@
  * along with rust-gdb.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-use dbg;
-use msg;
+use crate::dbg;
+use crate::msg;
 use regex;
 use std::str;
 
@@ -51,8 +51,8 @@ pub fn parse_result_line(mut line: &str) -> Option<msg::MessageRecord<msg::Resul
     let mut result = Vec::new();
     if line.starts_with("\n") || line.starts_with("\r\n") {
         return Some(msg::MessageRecord::<msg::ResultClass> {
-            token: token,
-            class: class,
+            token,
+            class,
             content: result,
         });
     } else if !line.starts_with(",") {
@@ -78,8 +78,8 @@ pub fn parse_result_line(mut line: &str) -> Option<msg::MessageRecord<msg::Resul
         }
     }
     Some(msg::MessageRecord::<msg::ResultClass> {
-        token: token,
-        class: class,
+        token,
+        class,
         content: result,
     })
 }

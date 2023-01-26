@@ -21,38 +21,54 @@ mod dbg;
 mod msg;
 mod parser;
 
-#[test]
-fn start_debugger() {
-    let mut dbg = dbg::Debugger::start().unwrap();
-    let resp = dbg.send_cmd_raw("-break-info\n").unwrap();
-    assert_eq!(msg::ResultClass::Done, resp.class);
-    println!("{:?}", resp);
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    macro_rules! aw {
+        ($e:expr) => {
+            tokio_test::block_on($e)
+        };
+    }
 
-#[test]
-fn parse_stuff() {
-    let resp = parser::parse_line("789^done,this=\"that\"\n").unwrap();
-    match resp {
-        msg::Record::Result(msg) => {
-            println!("{:?}", msg);
-        }
-        _ => panic!("wrong type :("),
-    };
+    #[test]
+    fn test_start_debugger() {
+        tracing_subscriber::fmt::init();
+        aw!(test_start_debugger_async());
+    }
 
-    let resp = parser::parse_line("=stopped,this=\"that\"\n").unwrap();
-    match resp {
-        msg::Record::Async(msg) => {
-            println!("{:?}", msg);
-        }
-        _ => panic!("wrong type :("),
-    };
-    let resp = parser::parse_line("~\"yadda yadda\"\n").unwrap();
-    match resp {
-        msg::Record::Stream(msg) => {
-            println!("{:?}", msg);
-        }
-        _ => panic!("wrong type :("),
-    };
+    async fn test_start_debugger_async() {
+        let mut dbg = dbg::Debugger::start().await.unwrap();
+        dbg.send_cmd_raw("-break-info\n").await;
+
+        let resp = dbg.read_result_record().await;
+        assert_eq!(msg::ResultClass::Done, resp.class);
+    }
+
+    #[test]
+    fn parse_stuff() {
+        let resp = parser::parse_line("789^done,this=\"that\"\n").unwrap();
+        match resp {
+            msg::Record::Result(msg) => {
+                println!("{:?}", msg);
+            }
+            _ => panic!("wrong type :("),
+        };
+
+        let resp = parser::parse_line("=stopped,this=\"that\"\n").unwrap();
+        match resp {
+            msg::Record::Async(msg) => {
+                println!("{:?}", msg);
+            }
+            _ => panic!("wrong type :("),
+        };
+        let resp = parser::parse_line("~\"yadda yadda\"\n").unwrap();
+        match resp {
+            msg::Record::Stream(msg) => {
+                println!("{:?}", msg);
+            }
+            _ => panic!("wrong type :("),
+        };
+    }
 }
 
 pub use dbg::*;

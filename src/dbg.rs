@@ -15,24 +15,22 @@
  * along with rust-gdb.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-use msg;
-use parser;
+use crate::msg;
+use crate::parser;
 use std::convert::From;
 use std::fmt;
-use std::io;
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process;
+use std::process::Stdio;
 use std::result;
 use std::str;
-
-pub struct Debugger {
-    stdin: BufWriter<process::ChildStdin>,
-    stdout: BufReader<process::ChildStdout>,
-}
+use tokio::process::Command;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
+    sync::mpsc::{channel, Receiver, Sender},
+};
 
 #[derive(Debug)]
 pub enum Error {
-    IOError(io::Error),
+    IOError(std::io::Error),
     ParseError,
     IgnoredOutput,
 }
@@ -49,69 +47,135 @@ impl fmt::Display for Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Error {
         Error::IOError(err)
     }
 }
 
+pub struct Debugger {
+    /// We read from gdb an already processed records
+    stdout: Receiver<msg::Record>,
+    /// We write to gdb raw string commands
+    stdin: Sender<String>,
+}
+
+fn escape_command(cmd: &str) -> String {
+    let cmd = cmd.replace("\r", "\\r");
+    let cmd = cmd.replace("\n", "\\n");
+    cmd
+}
+
 impl Debugger {
-    fn read_sequence(&mut self) -> Result<Vec<msg::Record>> {
-        let mut result = Vec::new();
-        let mut line = String::new();
-        self.stdout.read_line(&mut line)?;
-        while line != "(gdb) \n" && line != "(gdb) \r\n" {
-            match parser::parse_line(line.as_str()) {
-                Ok(resp) => result.push(resp),
-                Err(err) => return Err(err),
+    /// start new gdb process
+    pub async fn start() -> Result<Self> {
+        tracing::debug!("launching debugger");
+        let name = ::std::env::var("GDB_BINARY").unwrap_or("gdb".to_string());
+        let mut child = Command::new(name)
+            .args(&["--interpreter=mi"])
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        // =======================
+        // Handling stdout
+        // =======================
+        let stdout = child
+            .stdout
+            .take()
+            .expect("child did not have a handle to stdout");
+
+        // start a tasks here that always listens to gdb, parses the output and put it inside a channel
+        let (sender, stdout_receiver) = channel::<msg::Record>(100);
+        let mut reader = BufReader::new(stdout).lines();
+        tracing::debug!("launching gdb reader task");
+        tokio::spawn(async move {
+            while let Ok(line) = reader.next_line().await {
+                if let Some(line) = line {
+                    // skip gdb prompt line
+                    if line.starts_with("(gdb)") {
+                        continue;
+                    }
+                    tracing::trace!("{}", escape_command(&line));
+                    Self::process_line(line, &sender).await;
+                }
             }
-            line.clear();
-            self.stdout.read_line(&mut line)?;
-        }
-        Ok(result)
+        });
+
+        // =======================
+        // Handling stdin
+        // =======================
+
+        let stdin = child
+            .stdin
+            .take()
+            .expect("child did not have a handle to stdin");
+        let (sender, mut stdin_receiver) = channel::<String>(100);
+        let mut writer = BufWriter::new(stdin);
+        tracing::debug!("launching gdb writer task");
+        tokio::spawn(async move {
+            while let Some(line) = stdin_receiver.recv().await {
+                tracing::debug!("will send command to gdb: {}", escape_command(&line));
+                let buf = line.as_bytes();
+                let _ = writer.write(buf).await;
+                let _ = writer.flush().await;
+                tracing::debug!("command sent!");
+            }
+        });
+
+        tracing::debug!("gdb is up and running");
+        Ok(Debugger {
+            stdout: stdout_receiver,
+            stdin: sender,
+        })
     }
 
-    fn read_result_record(&mut self) -> Result<msg::MessageRecord<msg::ResultClass>> {
+    /// Process gdb output line
+    async fn process_line(mut line: String, sender: &Sender<msg::Record>) {
+        if !line.ends_with("\n") {
+            line.push('\n');
+        }
+        match parser::parse_line(line.as_str()) {
+            Ok(resp) => {
+                tracing::trace!("pushing response to queue");
+                let _ = sender.send(resp).await;
+            }
+            Err(_) => {
+                tracing::trace!("error parsing line: `{}`", line.as_str());
+                return;
+            }
+        };
+    }
+
+    /// Read a single gdb `ResultRecord` from gdb
+    pub async fn read_result_record(&mut self) -> msg::MessageRecord<msg::ResultClass> {
         loop {
-            let sequence = self.read_sequence()?;
-            for record in sequence.into_iter() {
+            if let Some(record) = self.stdout.recv().await {
+                tracing::trace!("got {:?}", record);
                 match record {
-                    msg::Record::Result(msg) => return Ok(msg),
+                    msg::Record::Result(msg) => return msg,
+                    msg::Record::Stream(rec) => match rec {
+                        msg::StreamRecord::Console(msg)
+                        | msg::StreamRecord::Target(msg)
+                        | msg::StreamRecord::Log(msg) => {
+                            tracing::trace!("read stream: {}", escape_command(&msg))
+                        }
+                    },
                     _ => {}
                 }
             }
         }
     }
 
-    pub fn send_cmd_raw(&mut self, cmd: &str) -> Result<msg::MessageRecord<msg::ResultClass>> {
+    /// Send command to gdb
+    pub async fn send_cmd_raw(&mut self, cmd: &str) {
+        tracing::debug!("sending command: {} to gdb", escape_command(&cmd));
         if cmd.ends_with("\n") {
-            write!(self.stdin, "{}", cmd)?;
+            let _ = self.stdin.send(cmd.to_string()).await;
         } else {
-            writeln!(self.stdin, "{}", cmd)?;
+            let _ = self.stdin.send(cmd.to_string() + "\n").await;
         }
-        self.stdin.flush()?;
-        self.read_result_record()
-    }
-
-    pub fn start() -> Result<Self> {
-        let name = ::std::env::var("GDB_BINARY").unwrap_or("gdb".to_string());
-        let mut child = process::Command::new(name)
-            .args(&["--interpreter=mi"])
-            .stdout(process::Stdio::piped())
-            .stdin(process::Stdio::piped())
-            .stderr(process::Stdio::piped())
-            .spawn()?;
-        let mut result = Debugger {
-            stdin: BufWriter::new(child.stdin.take().expect("broken stdin")),
-            stdout: BufReader::new(child.stdout.take().expect("broken stdout")),
-        };
-        result.read_sequence()?;
-        Ok(result)
-    }
-}
-
-impl Drop for Debugger {
-    fn drop(&mut self) {
-        let _ = self.stdin.write_all(b"-gdb-exit\n");
+        tracing::debug!("done");
     }
 }
