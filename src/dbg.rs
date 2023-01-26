@@ -55,9 +55,9 @@ impl From<std::io::Error> for Error {
 
 pub struct Debugger {
     /// We read from gdb an already processed records
-    stdout: Receiver<msg::Record>,
+    pub stdout: Receiver<msg::Record>,
     /// We write to gdb raw string commands
-    stdin: Sender<String>,
+    pub stdin: Sender<String>,
 }
 
 fn escape_command(cmd: &str) -> String {
