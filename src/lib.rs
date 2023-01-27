@@ -24,16 +24,20 @@ mod parser;
 #[cfg(test)]
 mod tests {
     use super::*;
-    macro_rules! aw {
-        ($e:expr) => {
-            tokio_test::block_on($e)
-        };
+    use std::future::Future;
+    use tokio::runtime::Runtime;
+
+    /// Helper function to bridge between the async <-> sync code
+    fn run_async(future: impl Future) {
+        let rt = Runtime::new().unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, future);
     }
 
     #[test]
     fn test_start_debugger() {
         tracing_subscriber::fmt::init();
-        aw!(test_start_debugger_async());
+        run_async(test_start_debugger_async());
     }
 
     async fn test_start_debugger_async() {

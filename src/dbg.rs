@@ -90,7 +90,7 @@ impl Debugger {
         let (sender, stdout_receiver) = channel::<msg::Record>(100);
         let mut reader = BufReader::new(stdout).lines();
         tracing::debug!("launching gdb reader task");
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             while let Ok(line) = reader.next_line().await {
                 if let Some(line) = line {
                     // skip gdb prompt line
@@ -114,7 +114,7 @@ impl Debugger {
         let (sender, mut stdin_receiver) = channel::<String>(100);
         let mut writer = BufWriter::new(stdin);
         tracing::debug!("launching gdb writer task");
-        tokio::spawn(async move {
+        tokio::task::spawn_local(async move {
             while let Some(line) = stdin_receiver.recv().await {
                 tracing::debug!("will send command to gdb: {}", escape_command(&line));
                 let buf = line.as_bytes();
