@@ -35,17 +35,39 @@ mod tests {
     }
 
     #[test]
-    fn test_start_debugger() {
+    fn test_debug_session() {
         tracing_subscriber::fmt::init();
-        run_async(test_start_debugger_async());
-    }
+        run_async(async move {
+            let mut dbg = dbg::Debugger::start().await.unwrap();
+            assert!(dbg.can_send_commands());
 
-    async fn test_start_debugger_async() {
-        let mut dbg = dbg::Debugger::start().await.unwrap();
-        dbg.send_cmd_raw("-break-info\n").await;
+            if let Ok(test_exe) = std::env::var("TEST_EXE") {
+                // load the executable
+                let test_exe = test_exe.replace("\\", "/");
+                dbg.send_cmd_raw(&format!(r#"-file-exec-and-symbols "{test_exe}""#))
+                    .await;
+                let resp = dbg.read_result_record().await;
+                assert_eq!(msg::ResultClass::Done, resp.class);
 
-        let resp = dbg.read_result_record().await;
-        assert_eq!(msg::ResultClass::Done, resp.class);
+                dbg.send_cmd_raw("-exec-run").await;
+                let resp = dbg.read_result_record().await;
+
+                tracing::debug!("{:?}", resp);
+                assert_eq!(msg::ResultClass::Running, resp.class);
+
+                // let the process a chance to start
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+                // Make sure we can not send commands
+                assert!(!dbg.can_send_commands());
+
+                // we should have the debugiee process id by now
+                assert!(dbg.get_debuggee_pid().is_some(), "no debuggee process id");
+
+                // interrupt the process
+                //assert!(dbg.interrupt());
+            }
+        });
     }
 
     #[test]

@@ -17,21 +17,21 @@
 
 use std::str;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Record {
     Result(MessageRecord<ResultClass>),
     Async(AsyncRecord),
     Stream(StreamRecord),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MessageRecord<ClassT> {
     pub token: Option<String>,
     pub class: ClassT,
     pub content: Vec<Variable>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ResultClass {
     Done,
     Running,
@@ -40,33 +40,33 @@ pub enum ResultClass {
     Exit,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AsyncClass {
     Stopped,
     Other,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AsyncRecord {
     Exec(MessageRecord<AsyncClass>),
     Status(MessageRecord<AsyncClass>),
     Notify(MessageRecord<AsyncClass>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StreamRecord {
     Console(Constant),
     Target(Constant),
     Log(Constant),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Variable {
     pub name: VarName,
     pub value: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     String(Constant),
     VariableList(Vec<Variable>),

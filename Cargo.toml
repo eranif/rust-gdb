@@ -11,9 +11,8 @@ edition = "2021"
 
 [dependencies]
 regex = "1.7.1"
-tokio = { version = "1.2", features = ["full"] }
+tokio = { version = "1.24.2", features = ["full"] }
 tracing = "*"
 tracing-subscriber = "0.3"
-
-[dev-dependencies]
-tokio-test = "*"
+signal-child = "1.0.5"
+libc = "0.2.139"

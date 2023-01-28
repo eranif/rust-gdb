@@ -16,12 +16,19 @@
  */
 
 use crate::msg;
+use crate::msg::{AsyncClass, AsyncRecord, Record, ResultClass, Value};
 use crate::parser;
-use std::convert::From;
-use std::fmt;
-use std::process::Stdio;
-use std::result;
-use std::str;
+use std::{
+    convert::From,
+    fmt,
+    process::Stdio,
+    result, str,
+    sync::{
+        atomic::Ordering,
+        atomic::{AtomicBool, AtomicUsize},
+        Arc,
+    },
+};
 use tokio::process::Command;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -58,6 +65,10 @@ pub struct Debugger {
     pub stdout: Receiver<msg::Record>,
     /// We write to gdb raw string commands
     pub stdin: Sender<String>,
+    /// The debugger state
+    pub can_interact: Arc<AtomicBool>,
+    /// The debugee pid
+    pub debugee_pid: Arc<AtomicUsize>,
 }
 
 fn escape_command(cmd: &str) -> String {
@@ -79,7 +90,7 @@ impl Debugger {
             .spawn()?;
 
         // =======================
-        // Handling stdout
+        // Handling stdout / Stdin
         // =======================
         let stdout = child
             .stdout
@@ -87,7 +98,20 @@ impl Debugger {
             .expect("child did not have a handle to stdout");
 
         // start a tasks here that always listens to gdb, parses the output and put it inside a channel
-        let (sender, stdout_receiver) = channel::<msg::Record>(100);
+        let (stdout_sender, stdout_receiver) = channel::<msg::Record>(100);
+
+        let stdin = child
+            .stdin
+            .take()
+            .expect("child did not have a handle to stdin");
+        let (stdin_sender, mut stdin_receiver) = channel::<String>(100);
+
+        let can_interact = Arc::new(AtomicBool::new(true));
+        let debugee_pid = Arc::new(AtomicUsize::new(usize::MAX));
+
+        let can_interact_clone = can_interact.clone();
+        let debugee_pid_clone = debugee_pid.clone();
+
         let mut reader = BufReader::new(stdout).lines();
         tracing::debug!("launching gdb reader task");
         tokio::task::spawn_local(async move {
@@ -98,22 +122,21 @@ impl Debugger {
                         continue;
                     }
                     tracing::trace!("{}", escape_command(&line));
-                    Self::process_line(line, &sender).await;
+                    Self::process_line(
+                        line,
+                        &stdout_sender,
+                        can_interact_clone.clone(),
+                        debugee_pid_clone.clone(),
+                    )
+                    .await;
                 }
             }
         });
 
-        // =======================
-        // Handling stdin
-        // =======================
-
-        let stdin = child
-            .stdin
-            .take()
-            .expect("child did not have a handle to stdin");
-        let (sender, mut stdin_receiver) = channel::<String>(100);
         let mut writer = BufWriter::new(stdin);
         tracing::debug!("launching gdb writer task");
+        // start a task that reads lines from the input channel `stdin_receiver` and writes
+        // them to the gdb process
         tokio::task::spawn_local(async move {
             while let Some(line) = stdin_receiver.recv().await {
                 tracing::debug!("will send command to gdb: {}", escape_command(&line));
@@ -127,42 +150,117 @@ impl Debugger {
         tracing::debug!("gdb is up and running");
         Ok(Debugger {
             stdout: stdout_receiver,
-            stdin: sender,
+            stdin: stdin_sender,
+            can_interact,
+            debugee_pid,
         })
     }
 
     /// Process gdb output line
-    async fn process_line(mut line: String, sender: &Sender<msg::Record>) {
+    async fn process_line(
+        mut line: String,
+        sender: &Sender<msg::Record>,
+        can_interact: Arc<AtomicBool>,
+        debugee_pid: Arc<AtomicUsize>,
+    ) {
         if !line.ends_with("\n") {
             line.push('\n');
         }
         match parser::parse_line(line.as_str()) {
             Ok(resp) => {
-                tracing::trace!("pushing response to queue");
+                match &resp {
+                    Record::Async(async_record) => {
+                        match async_record {
+                            // keep track of "*stopped" messages and mark the debugger as
+                            // "can_interact"
+                            AsyncRecord::Exec(s) | AsyncRecord::Status(s) => {
+                                tracing::trace!("pushing response (AsyncRecord::Exec) to queue");
+                                if s.class == AsyncClass::Stopped {
+                                    tracing::trace!(
+                                        "debugger is stopped -> can_interact is set to TRUE"
+                                    );
+                                    can_interact.store(true, Ordering::Relaxed);
+                                }
+                            }
+                            AsyncRecord::Notify(s) => {
+                                // Looking for the process id
+                                if s.class == AsyncClass::Other
+                                    && debugee_pid.load(Ordering::Relaxed) == usize::MAX
+                                {
+                                    for var in &s.content {
+                                        if var.name.eq("pid") {
+                                            if let Value::String(str_value) = &var.value {
+                                                // found the pid
+                                                let stripped_value = str_value.replace("\"", "");
+                                                if let Ok(pid) = stripped_value.parse() {
+                                                    debugee_pid.store(pid, Ordering::Relaxed);
+                                                    tracing::debug!("debuggee PID is {}", pid);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Record::Result(res) => {
+                        // keep track of records of type "*running"
+                        if res.class == ResultClass::Running {
+                            tracing::trace!("debugger is running -> can_interact is set to FALSE");
+                            can_interact.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    _ => {}
+                }
                 let _ = sender.send(resp).await;
             }
             Err(_) => {
-                tracing::trace!("error parsing line: `{}`", line.as_str());
-                return;
+                //                tracing::trace!("error parsing line: `{}`", line.as_str());
+                //                return;
             }
         };
     }
 
-    /// Read a single gdb `ResultRecord` from gdb
+    /// Read the first `msg::ResultClass` from gdb output queue
     pub async fn read_result_record(&mut self) -> msg::MessageRecord<msg::ResultClass> {
         loop {
-            if let Some(record) = self.stdout.recv().await {
-                tracing::trace!("got {:?}", record);
+            let record = self.read_message_record().await;
+            match record {
+                msg::Record::Result(msg) => return msg,
+                msg::Record::Stream(rec) => match rec {
+                    msg::StreamRecord::Console(_msg)
+                    | msg::StreamRecord::Target(_msg)
+                    | msg::StreamRecord::Log(_msg) => {
+                        //tracing::trace!("read stream: {}", escape_command(&msg))
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+
+    /// Read the first `msg::ResultClass` from gdb output queue
+    pub async fn read_message_record(&mut self) -> msg::Record {
+        loop {
+            if let Some(record) = &self.stdout.recv().await {
                 match record {
-                    msg::Record::Result(msg) => return msg,
+                    msg::Record::Result(message) => {
+                        tracing::trace!("< {:?}", message);
+                        return record.clone();
+                    }
                     msg::Record::Stream(rec) => match rec {
-                        msg::StreamRecord::Console(msg)
-                        | msg::StreamRecord::Target(msg)
-                        | msg::StreamRecord::Log(msg) => {
-                            tracing::trace!("read stream: {}", escape_command(&msg))
+                        msg::StreamRecord::Console(message)
+                        | msg::StreamRecord::Target(message)
+                        | msg::StreamRecord::Log(message) => {
+                            tracing::trace!("< {}", escape_command(&message));
+                            return record.clone();
                         }
                     },
-                    _ => {}
+                    msg::Record::Async(async_record) => {
+                        tracing::trace!("< {:?}", async_record);
+                        return record.clone();
+                    }
                 }
             }
         }
@@ -177,5 +275,40 @@ impl Debugger {
             let _ = self.stdin.send(cmd.to_string() + "\n").await;
         }
         tracing::debug!("done");
+    }
+
+    /// can we send commands to the debugger now?
+    pub fn can_send_commands(&self) -> bool {
+        self.can_interact.load(Ordering::Relaxed)
+    }
+
+    /// interrupt the running process
+    pub fn interrupt(&self) -> bool {
+        if self.can_send_commands() {
+            // nothing to be done more
+            tracing::debug!(
+                "no need to interrupt debugee process. it is already in an interactive mode"
+            );
+            return true;
+        }
+
+        if self.debugee_pid.load(Ordering::Relaxed) == usize::MAX {
+            tracing::debug!("can not interrupt debugee process. I don't know its process id yet");
+            return false;
+        }
+
+        let exit_status = std::process::Command::new("gint")
+            .arg(format!("{}", self.debugee_pid.load(Ordering::Relaxed)))
+            .status()
+            .expect("failed to run gint process!");
+        exit_status.success()
+    }
+
+    pub fn get_debuggee_pid(&self) -> Option<usize> {
+        if self.debugee_pid.load(Ordering::Relaxed) != usize::MAX {
+            Some(self.debugee_pid.load(Ordering::Relaxed))
+        } else {
+            None
+        }
     }
 }

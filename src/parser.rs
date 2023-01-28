@@ -278,7 +278,7 @@ fn parse_value_list(data: &str) -> Option<(msg::Value, &str)> {
     }
     let mut data = data.split_at(1).1;
     let mut result = Vec::new();
-    if data.starts_with("]") {
+    if data.starts_with(']') {
         return Some((msg::Value::ValueList(result), data.split_at(1).1));
     }
     if let Some((value, rest)) = parse_value(data) {
