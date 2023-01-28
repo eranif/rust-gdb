@@ -20,19 +20,65 @@ extern crate regex;
 mod dbg;
 mod msg;
 mod parser;
+use std::future::Future;
+
+use sysinfo::Signal;
+#[cfg(not(windows))]
+use sysinfo::{Pid, ProcessExt, System, SystemExt};
+use tokio::runtime::Runtime;
+
+/// Helper function to bridge between the async <-> sync code
+pub fn run_async(future: impl Future) {
+    let rt = Runtime::new().unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, future);
+}
+
+#[cfg(target_os = "windows")]
+use kernel32::DebugBreakProcess;
+
+/// Send `sigid` to process with ID `pid`
+/// Return true on success
+#[cfg(target_os = "windows")]
+pub fn signal(pid: usize, sigid: Signal) -> bool {
+    unsafe {
+        match sigid {
+            Signal::Interrupt => {
+                let open_mode: u32 = 2097151; // PROCESS_ALL_ACCESS
+                let process_handle =
+                    winapi::um::processthreadsapi::OpenProcess(open_mode, 0, pid as u32);
+                DebugBreakProcess(process_handle) == 1
+            }
+            Signal::Kill => {
+                let open_mode: u32 = 2097151; // PROCESS_ALL_ACCESS
+                let process_handle =
+                    winapi::um::processthreadsapi::OpenProcess(open_mode, 0, pid as u32);
+                winapi::um::processthreadsapi::TerminateProcess(process_handle, 0);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn signal(pid: usize, sigid: Signal) -> bool {
+    let mut s = System::new();
+    s.refresh_processes();
+    if let Some(process) = s.process(Pid::from(pid)) {
+        tracing::debug!("sending signal {} to process {}", sigid, pid);
+        if let Some(res) = process.kill_with(sigid) {
+            tracing::debug!("success");
+            return res;
+        }
+    }
+    return false;
+}
 
 #[cfg(test)]
 mod tests {
+    use super::run_async;
     use super::*;
-    use std::future::Future;
-    use tokio::runtime::Runtime;
-
-    /// Helper function to bridge between the async <-> sync code
-    fn run_async(future: impl Future) {
-        let rt = Runtime::new().unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, future);
-    }
 
     #[test]
     fn test_debug_session() {
@@ -56,16 +102,22 @@ mod tests {
                 assert_eq!(msg::ResultClass::Running, resp.class);
 
                 // let the process a chance to start
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-                // Make sure we can not send commands
+                // Make sure we CANNOT send commands
                 assert!(!dbg.can_send_commands());
 
                 // we should have the debugiee process id by now
                 assert!(dbg.get_debuggee_pid().is_some(), "no debuggee process id");
 
                 // interrupt the process
-                //assert!(dbg.interrupt());
+                assert!(dbg.interrupt());
+
+                // let the process a chance to start
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                // Make sure we CAN send commands
+                assert!(dbg.can_send_commands());
             }
         });
     }

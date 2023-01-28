@@ -65,6 +65,8 @@ pub struct Debugger {
     pub stdout: Receiver<msg::Record>,
     /// We write to gdb raw string commands
     pub stdin: Sender<String>,
+    /// gdb process ID
+    pub gdb_pid: Arc<AtomicUsize>,
     /// The debugger state
     pub can_interact: Arc<AtomicBool>,
     /// The debugee pid
@@ -151,6 +153,7 @@ impl Debugger {
         Ok(Debugger {
             stdout: stdout_receiver,
             stdin: stdin_sender,
+            gdb_pid: Arc::new(AtomicUsize::new(usize::MAX)),
             can_interact,
             debugee_pid,
         })
@@ -283,6 +286,7 @@ impl Debugger {
     }
 
     /// interrupt the running process
+    /// If success, we should `can_send_commands()` returns `true`
     pub fn interrupt(&self) -> bool {
         if self.can_send_commands() {
             // nothing to be done more
@@ -296,12 +300,7 @@ impl Debugger {
             tracing::debug!("can not interrupt debugee process. I don't know its process id yet");
             return false;
         }
-
-        let exit_status = std::process::Command::new("gint")
-            .arg(format!("{}", self.debugee_pid.load(Ordering::Relaxed)))
-            .status()
-            .expect("failed to run gint process!");
-        exit_status.success()
+        signal(self.debugee_pid.load(Ordering::Relaxed), Signal::Interrupt)
     }
 
     pub fn get_debuggee_pid(&self) -> Option<usize> {
@@ -310,5 +309,25 @@ impl Debugger {
         } else {
             None
         }
+    }
+
+    pub fn terminate(&self) {
+        tracing::debug!("terminating gdb...");
+        // terminate gdb + debugee
+        if self.debugee_pid.load(Ordering::Relaxed) != usize::MAX {
+            signal(self.debugee_pid.load(Ordering::Relaxed), Signal::Kill);
+        }
+        if self.gdb_pid.load(Ordering::Relaxed) != usize::MAX {
+            signal(self.gdb_pid.load(Ordering::Relaxed), Signal::Kill);
+        }
+    }
+}
+
+use crate::signal;
+use sysinfo::Signal;
+
+impl Drop for Debugger {
+    fn drop(&mut self) {
+        self.terminate();
     }
 }
