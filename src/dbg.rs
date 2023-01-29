@@ -61,8 +61,6 @@ impl From<std::io::Error> for Error {
 }
 
 pub struct Debugger {
-    /// We read from gdb an already processed records
-    pub stdout: Receiver<msg::Record>,
     /// We write to gdb raw string commands
     pub stdin: Sender<String>,
     /// gdb process ID
@@ -80,8 +78,11 @@ fn escape_command(cmd: &str) -> String {
 }
 
 impl Debugger {
-    /// start new gdb process
-    pub async fn start() -> Result<Self> {
+    /// start new gdb process. Return a pair:
+    ///
+    /// * A `Debugger` instsance
+    /// * The receiver end of the debugger's output channel
+    pub async fn start() -> Result<(Self, Receiver<msg::Record>)> {
         tracing::debug!("launching debugger");
         let name = ::std::env::var("GDB_BINARY").unwrap_or("gdb".to_string());
         let mut child = Command::new(name)
@@ -100,7 +101,7 @@ impl Debugger {
             .expect("child did not have a handle to stdout");
 
         // start a tasks here that always listens to gdb, parses the output and put it inside a channel
-        let (stdout_sender, stdout_receiver) = channel::<msg::Record>(100);
+        let (stdout_sender, output_channel) = channel::<msg::Record>(100);
 
         let stdin = child
             .stdin
@@ -150,13 +151,15 @@ impl Debugger {
         });
 
         tracing::debug!("gdb is up and running");
-        Ok(Debugger {
-            stdout: stdout_receiver,
-            stdin: stdin_sender,
-            gdb_pid: Arc::new(AtomicUsize::new(usize::MAX)),
-            can_interact,
-            debugee_pid,
-        })
+        Ok((
+            Debugger {
+                stdin: stdin_sender,
+                gdb_pid: Arc::new(AtomicUsize::new(usize::MAX)),
+                can_interact,
+                debugee_pid,
+            },
+            output_channel,
+        ))
     }
 
     /// Process gdb output line
@@ -225,10 +228,15 @@ impl Debugger {
         };
     }
 
-    /// Read the first `msg::ResultClass` from gdb output queue
-    pub async fn read_result_record(&mut self) -> msg::MessageRecord<msg::ResultClass> {
+    /// Read the first `msg::ResultClass` from gdb output channel.
+    /// This method discards everything until it finds the
+    /// first `msg::ResultClass`
+    pub async fn read_result_record(
+        &self,
+        output_channel: &mut Receiver<msg::Record>,
+    ) -> msg::MessageRecord<msg::ResultClass> {
         loop {
-            let record = self.read_message_record().await;
+            let record = self.read_message_record(output_channel).await;
             match record {
                 msg::Record::Result(msg) => return msg,
                 msg::Record::Stream(rec) => match rec {
@@ -244,9 +252,12 @@ impl Debugger {
     }
 
     /// Read the first `msg::ResultClass` from gdb output queue
-    pub async fn read_message_record(&mut self) -> msg::Record {
+    pub async fn read_message_record(
+        &self,
+        output_channel: &mut Receiver<msg::Record>,
+    ) -> msg::Record {
         loop {
-            if let Some(record) = &self.stdout.recv().await {
+            if let Some(record) = &output_channel.recv().await {
                 match record {
                     msg::Record::Result(message) => {
                         tracing::trace!("< {:?}", message);

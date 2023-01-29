@@ -1,6 +1,6 @@
 # Description
 
-*rust-gdb* is a WIP library for controlling GDB from Rust programs. At the
+*rust-gdb* is a WIP library for controlling GDB from Rust programs using the [tokio runtime](https://tokio.rs). At the
 moment, it can launch a GDB process, pass commands, and parse gdb's responses.
 *rust-gdb* uses GDB's
 [Machine Interface](https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI.html).
@@ -11,29 +11,46 @@ Missing features:
 * Better interface for executing commands
 * Proper documentation
 
-# Usage
+# Usage example
 
-## Launching the debugger
 
-    use gdb;
+```
+        run_async(async move {
+            let (mut dbg, mut rx) = dbg::Debugger::start().await.unwrap();
+            assert!(dbg.can_send_commands());
 
-    let debugger = gdb::Debugger::start().unwrap();
+            if let Ok(test_exe) = std::env::var("TEST_EXE") {
+                // load the executable
+                let test_exe = test_exe.replace("\\", "/");
+                dbg.send_cmd_raw(&format!(r#"-file-exec-and-symbols "{test_exe}""#))
+                    .await;
 
-The library will look for the *gdb* binary in your path.
+                let resp = dbg.read_result_record(&mut rx).await;
+                assert_eq!(msg::ResultClass::Done, resp.class);
 
-## Executing commands
+                dbg.send_cmd_raw("-exec-run").await;
+                let resp = dbg.read_result_record(&mut rx).await;
 
-    use gdb;
+                tracing::debug!("{:?}", resp);
+                assert_eq!(msg::ResultClass::Running, resp.class);
 
-    let mut debugger = gdb::Debugger::start().unwrap();
-    let response = debugger.send_cmd_raw("your-command-here\n").unwrap();
+                // let the process a chance to start
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-*send_cmd_raw* currently blocks until it gets a result record from GDB, so don't
-use async commands :)
+                // Make sure we CANNOT send commands
+                assert!(!dbg.can_send_commands());
 
-## Response format
+                // we should have the debugiee process id by now
+                assert!(dbg.get_debuggee_pid().is_some(), "no debuggee process id");
 
-Currently only result records are returned by *send_cmd_raw*. GDB/MI output
-structure is described [here](https://sourceware.org/gdb/onlinedocs/gdb/GDB_002fMI-Output-Syntax.html),
-*rust-gdb* practically transforms this into a syntax tree, as described in
-*msg.rs*.
+                // interrupt the process
+                assert!(dbg.interrupt());
+
+                // let the process a chance to start
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                // Make sure we CAN send commands
+                assert!(dbg.can_send_commands());
+            }
+        });
+```

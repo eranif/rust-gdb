@@ -84,7 +84,7 @@ mod tests {
     fn test_debug_session() {
         tracing_subscriber::fmt::init();
         run_async(async move {
-            let mut dbg = dbg::Debugger::start().await.unwrap();
+            let (mut dbg, mut rx) = dbg::Debugger::start().await.unwrap();
             assert!(dbg.can_send_commands());
 
             if let Ok(test_exe) = std::env::var("TEST_EXE") {
@@ -92,11 +92,12 @@ mod tests {
                 let test_exe = test_exe.replace("\\", "/");
                 dbg.send_cmd_raw(&format!(r#"-file-exec-and-symbols "{test_exe}""#))
                     .await;
-                let resp = dbg.read_result_record().await;
+
+                let resp = dbg.read_result_record(&mut rx).await;
                 assert_eq!(msg::ResultClass::Done, resp.class);
 
                 dbg.send_cmd_raw("-exec-run").await;
-                let resp = dbg.read_result_record().await;
+                let resp = dbg.read_result_record(&mut rx).await;
 
                 tracing::debug!("{:?}", resp);
                 assert_eq!(msg::ResultClass::Running, resp.class);
