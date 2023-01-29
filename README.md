@@ -14,7 +14,7 @@ Missing features:
 # Usage example
 
 
-```
+```rust
         run_async(async move {
             let (mut dbg, mut rx) = dbg::Debugger::start().await.unwrap();
             assert!(dbg.can_send_commands());
