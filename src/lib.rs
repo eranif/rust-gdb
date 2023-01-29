@@ -35,7 +35,7 @@ pub fn run_async(future: impl Future) {
 }
 
 #[cfg(target_os = "windows")]
-use kernel32::DebugBreakProcess;
+use winapi::um::winbase::DebugBreakProcess;
 
 /// Send `sigid` to process with ID `pid`
 /// Return true on success
